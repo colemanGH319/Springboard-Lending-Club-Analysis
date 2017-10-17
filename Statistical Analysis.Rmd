@@ -1,0 +1,147 @@
+---
+title: "Lending Club Statistical Analysis"
+output: html_document
+---
+
+###The Data: What Questions Can Be Answered?
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+  The dataset used for this analysis contains roughly 650,000 personal loans issued through Lending Club between 2014 and 2015. In order to operate within the memory capacity of my PC, I downsampled the data to 65,000 rows after cleaning.
+```{r, eval = TRUE, echo = FALSE}
+library(dplyr, quietly = TRUE, warn.conflicts = FALSE)
+library(ggplot2, quietly = TRUE, warn.conflicts = FALSE)
+library(tidyr, quietly = TRUE, warn.conflicts = FALSE)
+library(caTools, quietly = TRUE, warn.conflicts = FALSE)
+library(ROCR, quietly = TRUE, warn.conflicts = FALSE)
+loans.full <- read.csv("loans_clean.csv")
+set.seed(25)
+loans <- subset(loans.full, sample.split(loans.full$defaulted, SplitRatio = 0.1) == TRUE)
+```
+  Now that the data is clean and scaled down to a manageable size, the question we would like to find an answer to is this: are there certain aspects of a loan that would suggest a higher risk of defaulting? If so, how do these riskier loans impact the overall profitability of the lending service?
+  
+###Analysis
+
+  First, let's look at the distributions of loan amount and annual income as they are inextricably linked to a borrower's ability to pay the installments.
+  
+```{r, eval = TRUE, echo = FALSE}
+loans$loan_amnt %>% hist(breaks = 30, main = "Histogram of Loan Amount")
+ggplot(loans, aes(x = annual_inc)) +
+  geom_histogram(binwidth = 20000)
+```
+  
+  Loan amount is a slightly right tailed distribution with a large number of borrowers taking out the max loan amount of \$35,000. We can see that borrowers typically apply for loans in multiples of \$5,000. Annual income is also a right-tailed distribution with a very small number of borrowers earning between \$250,000 and \$1,000,000 annually and 75% of borrowers earning less than \$90,000/year.
+
+  Next, calculating the default rate will allow us to compare the relative risk levels of different groups of loans.
+  
+```{r, eval = TRUE, echo = FALSE}
+loans$default_int <- as.integer(loans$defaulted)
+def_prop <- mean(loans$default_int)
+def_prop
+```
+
+  Looking at the defaults, our dataset has a sample proportion of 12.4% of loans in default. We can use this as a benchmark when breaking down the default rate among subsets ot the total sample.
+  Diving into the possible explanatory variables, we will first look at the loan term. Generally, a longer term on a loan reflects a desire to spread out repayment over a longer period which may be indicative of certain constraints in the borrower's monthly budget.
+
+```{r, eval = TRUE, echo = FALSE}
+ggplot(loans, aes(x = term, fill = defaulted)) +
+  geom_bar(aes(y = ..count../sum(..count..)), position = "fill")
+loans60 <- loans[loans$term == " 60 months", "default_int"]
+loans36 <- loans[loans$term == " 36 months", "default_int"]
+prop.test(c(sum(loans60), sum(loans36)), c(length(loans60), length(loans36)))
+```
+
+  Borrowers on a 60 month loan term defaulted at a rate of 15.9% while borrowers on a 36 month loan defaulted at 10.8%. Using a 2-sample test of equal proportions, we find that the null hypothesis of equal proportions should be rejected at a 95% confidence interval and that 60-month loans indeed have a higher default rate than 36 month loans.
+  In searching for an explanation for the higher default rate among 60 month loans, we return to the topic of annual income and loan amount.
+  
+```{r, eval = TRUE, echo = TRUE}
+income_60 <- loans[loans$term == " 60 months", "annual_inc"]
+income_36 <- loans[loans$term == " 36 months", "annual_inc"]
+summary(income_60)
+summary(income_36)
+
+loanamt_60 <- loans[loans$term == " 60 months", "loan_amnt"]
+loanamt_36 <- loans[loans$term == " 36 months", "loan_amnt"]
+summary(loanamt_60)
+summary(loanamt_36)
+```
+  
+  It turns out that borrowers on 60 month loans have a 14.8% higher median income than borrowers on 36 month loans. However, the median loan amount is 92% higher for 60 month loans, which is way out of proportion with the difference in income. This may suggest that the borrowers on 60 month loans are struggling to pay their monthly installments due to inadequate cash flow.
+  
+```{r, eval = TRUE, echo = FALSE}
+boxplot(installment ~ term, loans)
+```
+
+  The above boxplot confirms that monthly installments are also higher for 60 month loans. Since we have a connection between 60 month loans and higher monthly installments, it will also help to show a density plot filled with default rates across different installment bins.
+
+```{r, eval = TRUE, echo = FALSE}
+ggplot(loans, aes(x = installment, fill = defaulted)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), position = "fill")
+```
+
+  As expected, higher monthly installments on personal loans correlate with higher default rates.
+  Another variable that may negatively impact a borrower's ability to pay off their loan is their total debt as a percentage of their annual income. Other things equal, a greater amount of total debt translates to a greater amount of interest paid on that debt, in addition to having to pay off the larger principal amount.
+
+```{r, eval = TRUE, echo = FALSE}
+summary(loans[loans$term == " 60 months", "dti"])
+summary(loans[loans$term == " 36 months", "dti"])
+boxplot(dti ~ term, loans, subset = dti < 100)
+```
+
+  The median debt to income ratio for borrowers on 60-month loans is 19.61% compared to 17.6% for 36-month loans. This isn't a particularly compelling statistic, however debt to income shouldn't be ruled out as an explanatory variable on its own.
+```{r, eval = TRUE, echo = FALSE}
+loans <- subset(loans, purpose != "educational")
+loans <- subset(loans, purpose != "wedding")
+```
+  The next variable selected was loan purpose, which initially consisted of 14 factors but was reduced to 12 due to small sample sizes for certain factors. A series of boxplots below displays the distribution of loan amounts by loan purpose.
+  
+```{r, eval = TRUE, echo = FALSE}
+par(las = 2, cex.axis = 0.7)
+boxplot(loan_amnt ~ purpose, loans)
+```
+
+  Small business loans tend to be the largest amount, followed by credit card loans and debt consolidation loans. Let's have a look at which loan purposes have the highest default rate using a table of default proportions:
+  
+```{r, eval = TRUE, echo = FALSE}
+prop.table(table(loans$purpose, loans$defaulted), 1)
+
+```
+
+  Moving loans have the highest chance of defaulting at 20.4%, followed by small business loans at 18.3% and house loans at 17%. This is an interesting finding as moving loans are among the lowest average loan amounts. Somewhat unexpectedly, loans for credit card debt have the lowest default rate at 9.5% despite having one of the highest average loan amounts.
+  
+```{r, eval = TRUE, echo = FALSE}
+prop.table(table(loans$purpose, loans$home_ownership), 1)
+```
+
+  Comparing homeownership types by loan purpose, we find that 79% of moving loans were taken out by renters while only 40.6% of credit card loans went to renters. The question that arises is whether or not renters default at a higher rate than the overall population.
+  
+```{r, eval = TRUE, echo = FALSE}
+prop.table(table(loans$home_ownership, loans$defaulted), 1)
+def_renters <- loans[loans$home_ownership == "RENT", "defaulted"]
+t.test(def_renters, mu = def_prop, alternative = "greater")
+loans %>% group_by(home_ownership) %>% summarise(income = mean(annual_inc))
+
+```
+
+  The proportion table above shows that renters have a default rate of 14.6% which is higher than our total sample proportion of 12.4%. Additionally, the t-test confirms that our null hypothesis of equal proportions should be rejected. As an explanation for what would cause renters to default more often, the above table shows that renters earn an average annual income of \$64,920 compared to the "Own" and "Mortgage" groups at \$70,150 and $85,194, respectively. Similarly, let's look at the annual incomes of different loan purposes:
+  
+```{r, eval = TRUE, echo = FALSE}
+loans %>% group_by(purpose) %>% summarise(income = mean(annual_inc))
+```
+  
+  It turns out that borrowers of moving loans had the second lowest mean annual income, which makes sense as so many of them are renters. It's likely that someone who takes out a loan in order to pay moving expenses has very little savings in addition to zero home equity (as they are usually renters), meaning the additional monthly expense of a personal loan is more likely to cause difficulty for them.
+  
+  From a lender's standpoint, it is common to view a borrower's employment length as a measure of financial stability. A borrower who frequently leaves jobs may not have the consistent income required to make monthly payments on a loan, while a borrower who has been employed longer is not only likely to have higher earnings, but may have an easier time budgeting as they have been living on a consistent income for longer. Let's see if this holds true:
+  
+```{r, eval = TRUE, echo = FALSE}
+loans %>% 
+  group_by(emp_length) %>% 
+  summarise(default = mean(as.integer(defaulted)), income = mean(annual_inc), med_income = median(annual_inc))
+```
+
+  As expected, income gradually increases as employment length increases, from a mean of \$70,935 for borrowers with less than 1 year employed to \$82,328 for those with 10 or more years of employment. Additionally, we can see the default rate gradually decrease in the same direction, with less than 1 year of employment defaulting 14% of the time and 10 or more years defaulting 10.9% of the time. What is even more convincing is the borrower's who listed "N/A" for their employment length: a mean income of just $49,464 and a default rate of 16.5%.
+  
+###Conclusion
+
+  Analyzing the Lending Club data set has revealed the key elements of good and bad loans. The dataset consisted of roughly 12.4% bad loans, but we were able to dive down and find certain characteristics that are associated with riskier loans. Some were pretty intuitive, such as annual income or debt-to-income ratio, while others may come as a surprise to someone with less domain knowledge, such as more defaults among longer loan terms or less defaults for loans that are used to pay off credit card debt. These variables will be used to build models that can predict the chances of a loan being successfully paid off as well as the potential payout, i.e. interest collected.

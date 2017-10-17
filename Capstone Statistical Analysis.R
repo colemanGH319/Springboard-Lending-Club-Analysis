@@ -5,7 +5,7 @@ library(caTools)
 library(ROCR)
 loans.full <- read.csv("loans_clean.csv")
 ## The full dataset is too large for the memory capacity, so I took 10% of the
-## original which leaves 60,000 rows to work with.
+## original which leaves 65,000 rows to work with.
 set.seed(25)
 loans <- subset(loans.full, sample.split(loans.full$defaulted, SplitRatio = 0.1) == TRUE)
 ## Starting with a couple of visualizations for loan amount and annual income:
@@ -88,26 +88,34 @@ prop.table(table(loans$purpose, loans$defaulted), 1)
 ## at 18.3% and house at 17%. Among listed purposes with over 1,000
 ## observations, loans for credit card debt have the lowest default rate, at
 ## 9.5%.
-
-## Loan term and homeownership: testing renters vs. total
+prop.table(table(loans$purpose, loans$home_ownership), 1)
+## 79% of the borrowers who took out loans for moving are renters while only 41%
+## of credit card loans went to renters and 48.4% went to borrowers with
+## mortgages. Loan term and homeownership: testing renters vs. total
 prop.table(table(loans$home_ownership, loans$defaulted), 1)
 ## Since borrowers who own their homes have a default rate roughly equivalent to
 ## the overall default rate and borrowers with a mortgage are lower, I will test
 ## the significance of renters having the higher default rate. 
 def_renters <- loans[loans$home_ownership == "RENT", "defaulted"]
 t.test(def_renters, mu = def_prop, alternative = "greater")
+loans %>% group_by(home_ownership) %>% summarise(income = mean(annual_inc))
 ## We should reject the null hypothesis that renters default at the same rate as
 ## the overall population.
+
+loans %>% group_by(purpose) %>% summarise(income = mean(annual_inc))
+## Fitting with our previous findings, moving loans reported the second lowest
+## annual income, behind car loans.
 
 ## Default rate by employment Length
 loans %>% 
   group_by(emp_length) %>% 
-  summarise(default = mean(as.integer(defaulted)))
-## The rate of default is 16.5% for borrowers who have no employment length and 
-## 14% for borrowers with less than 1 year in their current job. The default 
+  summarise(default = mean(as.integer(defaulted)), income = mean(annual_inc), med_income = median(annual_inc))
+## The rate of default is 16.5% for borrowers who have no employment length and
+## 14% for borrowers with less than 1 year in their current job. The default
 ## rate gradually decreases as employment length increases, which suggests that
-## stability in employment is associated with a lower risk of default.
-
+## stability in employment is associated with a lower risk of default. We can
+## also see how income increases as employment length increases, which directly
+## contributes to a borrower's ability to make loan payments.
 
 summary(loans$bc_util)
 ggplot(loans, aes(x = defaulted, y = bc_util)) +
