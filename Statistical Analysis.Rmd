@@ -1,6 +1,6 @@
 ---
 title: "Lending Club Statistical Analysis"
-output: html_document
+output: word_document
 ---
 
 ###The Data: What Questions Can Be Answered?
