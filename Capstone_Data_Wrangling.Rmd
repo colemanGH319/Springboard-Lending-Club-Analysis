@@ -1,0 +1,159 @@
+---
+title: "Cleaning Lending Club Dataset"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### About the data
+
+Lending Club is an online P2P lending platform that offers unsecured personal loans by connecting borrowers with investors who wish to back their loans. Data for personal loans issued through this service is available going back to 2011 on the following website: <https://www.lendingclub.com/info/download-data.action>.
+
+For this project, I chose to analyze loans issued in calendar years 2014 and 2015 for two reasons:
+
+* Loans are issued with 36-month or 60-month payment terms, so data from several years ago will offer a more clear picture on each borrower's ability to repay.
+
+* Going any further back in time may cause data to be of lesser quality. Furthermore, there may be macroeconomic trends in recent years that would cause older data to produce different results during analysis.
+
+### Load packages and import data
+
+I used the dplyr and tidyr packages to clean this data. The data was stored in two separate .csv files for 2014 and 2015.
+
+```{r Library, echo=FALSE}
+library(dplyr, quietly = TRUE)
+library(tidyr, quietly = TRUE)
+```
+
+```{r Load}
+loans14 <- read.csv("LoanStats3c.csv")
+loans15 <- read.csv("LoanStats3d.csv")
+```
+
+### Importing variable definitions into R
+
+As a supplement to the loan data, Lending Club offers a dictionary that explains the meaning of each variable. Rather than change the names of any variable, I loaded this dictionary and created a function to search the definition of variables as needed. In the below example, I researched the definition of loan_status.
+
+```{r Variable Definitions}
+definitions <- read.csv("LCDataDictionary.csv")
+definitions$LoanStatNew <- as.character(definitions$LoanStatNew)
+definitions$Description <- as.character(definitions$Description)
+define.var <- function(x) {
+  definitions[definitions$LoanStatNew == x,]
+}
+define.var("loan_status")
+```
+
+### Combine 2014 and 2015 data.
+
+I combined the data into one dataset with around 650,000 rows and 137 columns. Then I called a summary to review the columns.
+
+```{r}
+loans <- rbind(loans14, loans15)
+```
+```{r, eval=FALSE}
+summary(loans)
+```
+
+At this point, the quickest thing I uncovered was that there were many columns that had no data, most likely because the information was removed to protect borrowers' identities. The following histogram shows the count of columns binned by their percentage of rows that were NA.
+
+```{r, echo=FALSE}
+sapply(loans, function(x) {100*mean(is.na(x))}) %>% 
+  hist(breaks = 50, main = "% Empty Rows per Column")
+```
+
+  After careful review, I decided to clear out any columns that were more than 85% empty, which eliminated 37 columns. This left me with numerous columns that still had empty rows.
+```{r, eval=FALSE}
+emptycols <- c()
+for(i in 1:ncol(loans)) {
+  if(mean(is.na(loans[,i])) > 0.85) {
+    emptycols <- c(emptycols, i)
+  }
+}
+loans[,emptycols] <- NULL
+```
+
+### Wrangling Missing Data
+
+  For many of the remaining columns with missing data, I decided to create new variables as factors indicating whether or not the original variable had a value. Below is an example:
+```{r, eval = FALSE}
+summary(loans$mths_since_last_delinq)
+```
+  This variable is the number of months since the borrower was last delinquent on any payment. Roughly half of the rows in this column were missing values. Since a lower value most likely corresponds to a higher potential for defaulting, we don't want to set the NA's to zero, nor do we want to assume these borrowers would fall in the middle of the distribution. In all likelihood, a missing value would indicate that the borrower has never had a delinquency. Imputing values for this column is a highly complex task, so the workaround is to create a new column reflecting whether or not the borrower has a delinquency in their history.
+```{r, eval=FALSE}
+loans$ever_delinq <- ifelse(is.na(loans$mths_since_last_delinq), 0, 1)
+```
+  
+  Similar logic was applied to the following variables:
+
+* `r define.var("mths_since_last_major_derog")`
+
+* `r define.var("mths_since_recent_bc_dlq")`
+
+* `r define.var("mths_since_recent_inq")`
+
+* `r define.var("mths_since_recent_revol_delinq")`
+
+* `r define.var("num_tl_120dpd_2m")`
+
+* `r define.var("emp_length")` - Additional data manipulation will be done to this column later.
+
+  There were several columns where I elected to impute the missing values using the replace_na function from tidyr. For the following columns, missing values were imputed with the median:
+
+* `r define.var("avg_cur_bal")`
+
+* `r define.var("bc_open_to_buy")`
+
+* `r define.var("bc_util")`
+
+* `r define.var("mths_since_recent_bc")`
+
+  The variable "mo_sin_old_il_acct", number of months since the borrower opened their oldest bank installment account, was imputed using the history on a typical credit report, which looks back 7 years. The NA's for this column would indicate that the borrower's oldest bank installment account was opened at least 7 years or _84 months ago_.
+```{r, eval=FALSE}
+loans <- loans %>% replace_na(list(mo_sin_old_il_acct = 84), mo_sin_old_il_acct)
+```
+  
+  For the percentage of bankcard accounts where spending has passed 75% of the card's limit, a missing value most likely indicates that the borrower does not have a bankcard. I replaced NA's for percent_bc_gt_75 with zero's. The same logic applies to number of revolving accounts on the borrower's credit report (num_rev_accts).
+
+  **Employment Length (emp_length)** - This column consisted of 11 levels that indicated employment length ("< 1 year" all the way up to "10+ years"), plus a 12th factor called "n/a". To resolve this, I collapsed the column to the 11 available factors, leaving the remaining rows as true NA's. As mentioned above, I also created a new variable indicating whether any employment was listed for the borrower.
+```{r, eval=FALSE}
+loans$emp_length <- factor(loans$emp_length, levels = c("< 1 year", "1 year",
+                                                        "2 years", "3 years",
+                                                        "4 years", "5 years",
+                                                        "6 years", "7 years",
+                                                        "8 years", "9 years",
+                                                        "10+ years"))
+loans$employment_listed <- ifelse(is.na(loans$emp_length), 0, 1)
+```
+
+### Re-formatting and Converting Data Types
+  
+  Home ownership was a factor with 4 levels, but one of the levels ("ANY") only had 3 records. This column was collapsed to 3 factors: "RENT"", "MORTGAGE"" and "OWN".
+  Each loan's issue date was recorded as an abbreviated month and two-digit year, where the 2014 loans had month first and the 2015 loans had year first. Using regular expressions, I created separate columns for the issue year of the loan and the issue month of the loan and converted issue month to a 12-level factor. Below is a snippet of the code that I used...
+```{r, eval=FALSE}
+loans$issue_year <- ifelse(grepl("14", loans$issue_d), 2014, 2015)
+loans$issue_month <- loans$issue_d
+loans$issue_month <- gsub(".*Jan.*", "January", loans$issue_month)
+loans$issue_month <- gsub(".*Feb.*", "February", loans$issue_month)
+```
+...and the same goes for every month, of course.
+
+  Some columns simply needed to be converted to different types:
+
+* Since read.csv() was called with stringsAsfactors defaulting to TRUE, employment title and loan description needed to be converted to character strings.
+
+* Interest rate was imported as a factor, most likely because of the '%' symbol in the .csv. I converted this column to characters and used gsub() to remove the symbol, then converted to numeric.
+
+### Completion
+
+  Finally, I created a column called "defaulted", a 2-level factor that converted loan status into a TRUE for defaults and FALSE for non-defaults.
+```{r, eval=FALSE}
+loans <- loans %>%
+  mutate(defaulted = as.factor(loan_status == "Default" | loan_status == "Charged Off"))
+```
+
+  Now the dataset is ready to be analyzed.
+```{r, eval=FALSE}
+write.csv(loans, file = "loans_clean.csv")
+```
