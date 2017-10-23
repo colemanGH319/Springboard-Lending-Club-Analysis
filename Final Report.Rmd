@@ -1,0 +1,315 @@
+---
+title: "An Investor's Guide to Lending Club"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE}
+library(dplyr, quietly = TRUE, warn.conflicts = FALSE)
+library(ggplot2, quietly = TRUE, warn.conflicts = FALSE)
+library(tidyr, quietly = TRUE, warn.conflicts = FALSE)
+library(caTools, quietly = TRUE, warn.conflicts = FALSE)
+library(ROCR, quietly = TRUE, warn.conflicts = FALSE)
+library(xtable, quietly = TRUE, warn.conflicts = FALSE)
+library(knitr, quietly = TRUE, warn.conflicts = FALSE)
+loans.full <- read.csv("loans_clean.csv")
+set.seed(25)
+loans <- subset(loans.full, sample.split(loans.full$defaulted, SplitRatio = 0.1) == TRUE)
+loans$default_int <- as.integer(loans$defaulted)
+def_prop <- mean(loans$default_int)
+loans <- subset(loans, purpose != "educational")
+loans <- subset(loans, purpose != "wedding")
+loans$purpose <- factor(loans$purpose, levels = c("car", "credit_card",
+                                                  "debt_consolidation",
+                                                  "home_improvement",
+                                                  "house", "major_purchase",
+                                                  "medical", "moving",
+                                                  "other",
+                                                  "renewable_energy",
+                                                  "small_business",
+                                                   "vacation"),
+                        labels = c("Car", "Credit Card",
+                                   "Debt Consolidation", "Home Improvement",
+                                    "House","Major Purchase", "Medical",
+                                   "Moving", "Other","Renewable Energy",
+                                    "Small Business","Vacation"))
+                                                  
+```
+###Introduction
+
+  Lending Club is an online P2P lending platform that offers unsecured personal loans by connecting borrowers with investors who wish to back their loans. From the borrower's side, P2P lending services such as Lending Club are an increasingly popular new way to take out personal loans since the application process can be completed in under 30 minutes from the comfort of one's home, the approval process typically takes less than a day and the funds are wired directly to the borrower's bank account in 2-3 business days. Additionally, the size of these online marketplaces ensures that a borrower can find interest rates that are reasonable given their credit rating. From the investor's perspective, online lending platforms represent an investment opportunity that frequently offers higher returns than traditional investments such as stocks, bonds or mutual funds.
+
+###About the Data
+
+Data for personal loans issued through Lending Club is available going back to 2011 on the following website: <https://www.lendingclub.com/info/download-data.action>.
+
+For this project, I chose to analyze loans issued in calendar years 2014 and 2015 for two reasons:
+
+* Loans are issued with 36-month or 60-month payment terms, so data from several years ago will offer a more clear picture on each borrower's ability to repay.
+
+* Going any further back in time may cause data to be of lesser quality. Furthermore, there may be macroeconomic trends in recent years that would cause older data to produce different results during analysis.
+
+###Objective
+
+This analysis will attempt to accomplish multiple tasks:
+
+* Identify specific characteristics of loans that cause the probability of defaulting to be higher or lower.
+* Create and refine a model that can be used to separate successful loans from potential defaults.
+* Develop an investment strategy that will yield the highest overall ROI.
+
+###An Overview of Data Wrangling
+
+  The original dataset consisted of 650,000 rows each representing a loan and 137 columns describing various details of the loans. In order to be of use, the data had to be thoroughly cleaned, which in this case primarily meant removing or imputing missing values.
+  Columns with missing data were addressed first and in order ensure that each column had enough data to analyze, any column that was less than 15% populated was removed. For many of the remaining columns with missing data, new variables were created as factors indicating the presence of a value in the original variable. In the below example, the number of months since a borrower's last delinquency is converted to a factor describing whether or not the borrower had a delinquency in their credit history:
+
+```{r, eval = FALSE}
+loans$ever_delinq <- ifelse(is.na(loans$mths_since_last_delinq), 0, 1)
+```
+
+  This approach worked well for many of the variables that would indicate potentially problematic items in a borrower's credit history, such as recent bankcard delinquencies, payments that were over 120 days past due, or recent inquiries.
+  There were a number of columns where missing values were imputed with medians:
+
+* Average current account balance
+* Bankcard open-to-buy
+* Bankcard utilization
+* Months since most recent bankcard was opened
+
+  For the percentage of bankcard accounts where spending surpassed 75% of the card's limit, a missing value most likely indicated that the borrower does not have a bankcard. Missing values were therefore imputed with zero's. The same logic was applied to the number of revolving accounts.
+  Employment length was imported as a factor consisting initially of 12 levels ranging from less than one year to more than 10 years, but one level was the character string "n/a". The variable was collapsed to 11 levels so that "n/a" would actually read as a missing value. These were kept in order to analyze the connection between missing employment data and defaults.
+  The issue date of each loan was listed as a character string containing an abbreviated month and two digit year. These were split into separate columns containing the full name of the issue month in one column and the 4-digit issue year in the other.
+  Finally, the loan status column was used to created a new column indicating whether or not the loan had gone into default (charge-offs and defaults were included).
+  
+###Analysis
+
+  Due to computing constraints, the data was downsampled from 650,000 loans to 65,000. The analysis primarily consisted of sample mean comparisons across different segments of the dataset as well as hypothesis testing. Additionally, visualizations are provided to make the findings more impactful.
+  
+  First, a look at loan amounts and annual income:
+
+```{r, eval = TRUE, echo = FALSE}
+loans$loan_amnt %>% hist(breaks = 30, main = "Histogram of Loan Amount")
+```
+
+```{r, eval=TRUE, echo=FALSE}
+ggplot(loans, aes(x = annual_inc)) +
+  geom_histogram(binwidth = 20000) +
+  labs(x = "Annual Income", title = "Histogram of Annual Income")
+```
+
+  Loan amount is a slightly right tailed distribution with a large number of borrowers taking out the max loan amount of \$35,000. Borrowers typically apply for loans in multiples of \$5,000. Annual income is also a right-tailed distribution with a very small number of borrowers earning between \$250,000 and \$1,000,000 annually and 75% of borrowers earning less than \$90,000/year.
+  A quick calculation of the sample proportion of defaults revealed that 12.4% of all Lending Club loans go into default. This provides the benchmark for comparing the default rate among smaller segments of this sample. A review of the most important explanatory variables follows.
+  Generally, a longer term on a loan reflects a desire to spread out repayment of the loan over a longer period of time so as to lower the monthly installments. A longer loan term therefore may be indicative of certain budget constraints for the borrower which may eventually cause difficulty making payments.
+  
+```{r, eval = TRUE, echo = FALSE}
+ggplot(loans, aes(x = term, fill = defaulted)) +
+  geom_bar(aes(y = ..count../sum(..count..)), position = "fill") +
+  labs(x = "Loan Term", y = "Default Rate", title = "Defaults by Loan Term")
+loans60 <- loans[loans$term == " 60 months", "default_int"]
+loans36 <- loans[loans$term == " 36 months", "default_int"]
+prop.test(c(sum(loans60), sum(loans36)), c(length(loans60), length(loans36)))
+```
+
+  Borrowers on a 60 month loan term defaulted at a rate of 15.9% while borrowers on a 36 month loan defaulted 10.8% of the time. Using a 2-sample test of equal proportions, we find that the null hypothesis of equal proportions should be rejected at a 95% confidence interval and that 60-month loans indeed have a higher default rate than 36 month loans.
+  To shed more light on why 60 month loans default more often, the median annual income and loan amount was compared between 60 month loans and 36 month loans. Somewhat unexpectedly, the 60-month loans had a median annual income of \$70,000, which is 14.8% higher than the median of \$61,000 for 36-month loans. However, comparing loan amount reveals a major finding: 60-month loans were issued for a median amount of \$19,200, a staggering 92% higher than the median for 36-month loans, which was \$10,000. This may suggest that borrowers of 60-month loans are struggling to keep up with their higher monthly payments. The boxplot below shows a comparison of installments between the two loan terms.
+  
+```{r, eval = TRUE, echo = FALSE}
+boxplot(installment ~ term, loans, main = "Installments by Loan Term")
+```
+
+  The connection between 60-month loans and higher installments is clear, but are higher installments also associated with higher default rates? The following density plot is binned by installment and filled with default rates.
+  
+```{r, eval = TRUE, echo = FALSE}
+ggplot(loans, aes(x = installment, fill = defaulted)) +
+  geom_histogram(aes(y = ..count../sum(..count..)), position = "fill", bins = 15) +
+  labs(x = "Installment", y = "Default Rate", title = "Loan Defaults by Monthly Installment")
+```
+
+  Loans with higher installments appear to default more often than those with lower installments, which intuitively makes sense. A person's ability to successfully pay off debt hinges on their expenses being less than or equal to their income over the same time period.
+    Another variable that may negatively impact a borrower's ability to pay off their loan is their total debt as a percentage of their annual income. Other things equal, a greater amount of total debt translates to a greater amount of interest paid on that debt, in addition to having to pay off the larger principal amount.
+
+```{r, eval = TRUE, echo = FALSE}
+boxplot(dti ~ term, loans, subset = dti < 100, main="Debt-to-Income Ratio: A Comparison by Loan Term")
+```
+
+  The boxplot above shows only a slight difference in the average debt-to-income ratio among 60-month loans versus 36-month loans, the former being 19.6% and the latter being 17.6%. It is worth noting, however, that the difference in the total amount of debt is greater since borrowers of 60-month loans have a higher income.
+  Examining the variety of loan purposes reveals a significant variation in loan amounts by purpose.
+
+```{r, eval = TRUE, echo = FALSE}
+par(las = 2, cex.axis = 0.7)
+boxplot(loan_amnt ~ purpose, loans, main = "Loan Amount Summarized by Loan Purpose")
+```
+
+  Small business loans tend to be the largest amount, followed by credit card loans and debt consolidation loans. A table of default rate by loan purpose shows a re-shuffling of those ranks:
+  
+```{r, eval = TRUE, echo = FALSE}
+kable(xtable(prop.table(table(loans$purpose, loans$defaulted), 1)))
+```
+
+  Moving loans have the highest chance of defaulting at 20.4%, followed by small business loans at 18.3% and house loans at 17%. This is an interesting finding as moving loans are among the lowest average loan amounts. Somewhat unexpectedly, loans for credit card debt have the lowest default rate at 9.5% despite having one of the highest average loan amounts.
+  Comparing homeownership types by loan purpose, we find that 79% of moving loans were taken out by renters while only 40.6% of credit card loans went to renters. The question that arises is whether or not renters default at a higher rate than the overall population.
+
+```{r, echo=FALSE}
+kable(xtable(prop.table(table(loans$home_ownership, loans$defaulted), 1)),
+      caption = "Default Rates by Homeownership Type")
+```
+  
+  The proportion table above shows that renters have a default rate of 14.6% which is higher than our total sample proportion of 12.4%. Additionally, the t-test confirms that our null hypothesis of equal proportions should be rejected. A comparison of incomes across these segments shows that renters earn an average annual income of \$64,920 compared to the "Own" and "Mortgage" groups at \$70,150 and $85,194, respectively. Similarly, comparing the annual income among borrowers grouped by their loan purpose:
+  
+```{r, eval = TRUE, echo = FALSE}
+purpose.income <- loans %>% group_by(purpose) %>% summarise(income = mean(annual_inc))
+kable(xtable(purpose.income),
+      digits = 0,
+      caption = "Average Income Grouped by Loan Purpose",
+      col.names = c("Purpose", "Income"),
+      row.names = FALSE)
+```
+
+  It turns out that borrowers of moving loans had the second lowest mean annual income, which makes sense as so many of them are renters. It's likely that someone who takes out a loan in order to pay moving expenses has very little savings in addition to zero home equity (as they are usually renters), meaning the additional monthly expense of a personal loan is more likely to cause difficulty for them.
+  From a lender's standpoint, it is common to view a borrower's employment length as a measure of financial stability. A borrower who frequently leaves jobs may not have the consistent income required to make monthly payments on a loan, while a borrower who has been employed longer is not only likely to have higher earnings, but may have an easier time budgeting as they have been living on a consistent income for longer. Below is a table of default rates and incomes by employment length:
+
+```{r, eval = TRUE, echo = FALSE}
+emp_length.income <- loans %>% 
+  group_by(emp_length) %>% 
+  summarise(default = mean(as.integer(defaulted)), income = mean(annual_inc), med_income = median(annual_inc))
+kable(xtable(emp_length.income))
+```
+
+  As expected, income gradually increases as employment length increases, from a mean of \$70,935 for borrowers with less than 1 year employed to \$82,328 for those with 10 or more years of employment. Additionally, the default rate gradually decreases as employment length increases, with less than 1 year of employment defaulting 14% of the time and ten or more years defaulting 10.9% of the time. What is even more convincing is the borrower's who listed "N/A" for their employment length: a mean income of just $49,464 and a default rate of 16.5%.
+  Analyzing the Lending Club data set has revealed the key elements of good and bad loans. The dataset consisted of roughly 12.4% bad loans, but we were able to dive down and find certain characteristics that are associated with riskier loans. Some were pretty intuitive, such as annual income or debt-to-income ratio, while others may come as a surprise to someone with less domain knowledge, such as more defaults among longer loan terms or less defaults for loans that are used to pay off credit card debt. These variables will be used to build models that can predict the chances of a loan being successfully paid off as well as the potential payout, i.e. interest collected.
+  
+###Logistic Regression
+
+  As previously stated, the objective is to use the findings from the statistical analysis to build a model that can accurately predict whether or not a loan will go into default. This model can then be used in conjunction with a basic formula to calculate each loan's total return on investment. Finally, the question of whether a low-risk loan portfolio will outperform high-risk loans will be answered.
+  To begin the process of building a model, the following features were selected:
+  
+* Loan Amount
+* Term
+* Employment Length
+* Homeownership Type
+* Annual Income
+* Loan Purpose
+* Debt-to-income ratio
+
+Prior to creating the model, the downsampled dataset of 65,000 rows was split into a training dataset (with 60% of the data) and a test dataset (with the other 40%). The training dataset was used to create the model using the features mentioned above, with the response variable being whether or not the loan went into default. Below is a summary of the model's coefficients and significance levels:
+
+```{r, echo = FALSE}
+set.seed(99)
+split <- sample.split(loans$defaulted, SplitRatio = 0.6)
+loansTrain <- subset(loans, split == TRUE)
+loansTest <- subset(loans, split == FALSE)
+defaultmod <- glm(defaulted ~ loan_amnt + 
+                    term +
+                    emp_length +
+                    home_ownership +
+                    annual_inc +
+                    purpose +
+                    dti, data = loansTrain, family = "binomial")
+kable(xtable(summary(defaultmod)))
+```
+
+  In general, the coefficients in this model reaffirm the earlier findings. Higher loan amounts, 60-month loan terms, renters, lower annual income and debt-to-income ratio are all associated with a higher probability of defaulting and each of their respective coefficients has a high significance level. Employment length of greater than 10 years is shown to significantly reduce the default rate. However, loan purpose does not appear to be particularly effective in predicting defaults, with only small business loans showing significance.
+  Next, the model was used on the test data to determine each loan's probability of defaulting. To find the optimal probability threshold for predicting a default, the true positive rate and false positive rate at each possible threshold value are plotted on a Receiver Operator Characteristic (ROC) curve.
+
+```{r, echo = FALSE}
+predictTest <- predict(defaultmod, type = "response", newdata = loansTest)
+ROCRpred <- prediction(predictTest, loansTest$defaulted)
+ROCRperf <- performance(ROCRpred, "tpr", "fpr")
+ROC <- plot(ROCRperf, colorize = TRUE)
+```
+
+  Based on a visual assessment of the ROC plot, a threshold of 0.13 was selected. In order to gain a better understanding of the model's accuracy at this threshold, a confusion matrix was created in the form of an un-weighted proportion table showing what percentage of defaults and non-defaults were accurately predicted. The true positive rate comes in at 54.2% while the true negative rate is 64.1%. Adding the weighting back to account for the relatively small proportion of defaults, the model's out-of-sample accuracy is calculated at 62.9%.
+  This initial model can be improved upon by adding features as well as engineering a new feature. For the second model, loan amount and annual income were replaced with the ratio of loan amount to annual income:
+  
+```{r, echo = TRUE}
+loansTrain$loan_income_ratio <- loansTrain$loan_amnt / loansTrain$annual_inc
+loansTest$loan_income_ratio <- loansTest$loan_amnt / loansTest$annual_inc
+```
+
+Additionally, bankcard utilization percentage and history of delinquency were included in the new model. A summary of this new model is shown below:
+
+```{r, echo = FALSE}
+defaultmod2 <- glm(defaulted ~ loan_income_ratio + 
+                     term +
+                     emp_length +
+                     home_ownership +
+                     purpose +
+                     dti +
+                     bc_util +
+                     ever_delinq, data = loansTrain, family = "binomial")
+kable(xtable(summary(defaultmod2)))
+```
+
+The loan-to-income ratio appears to be a very strong indicator of a loan's likelihood of defaulting. Bankcard utilization is also highly significant with an extremely low standard error but the coefficient is much closer to zero. A delinquency in the borrower's credit history also seems to positively impact the probability of a default. Below is the ROC curve for this model:
+
+```{r, echo = FALSE}
+predictTest <- predict(defaultmod2, type = "response", newdata = loansTest)
+ROCRpred <- prediction(predictTest, loansTest$defaulted)
+ROCRperf <- performance(ROCRpred, "tpr", "fpr")
+plot(ROCRperf, colorize = TRUE)
+```
+
+Multiple thresholds were tested with the model and ultimately a threshold of 0.13 was chosen. The below confusion matrix shows a slight decrease in the true positive rate at 52.7%, however the true negative rate has improved to 65.4%. Overall, the out-of-sample accuracy of this model has improved by one basis point to 63.9%.
+
+```{r, echo = FALSE}
+threshold <- 0.13
+confusion2 <- prop.table(table(loansTest$defaulted, predictTest > threshold),1)
+kable(xtable(confusion2))
+```
+
+The logistic regression model can predict with considerable accuracy whether or not a loan will be successfully paid off. Another application for this model is to categorize loans into different risk levels and compare the return on investment. Remaining at the threshold probability of 0.13, the loans were separated into high-risk loans (greater than 0.13) and low-risk loans (less than or equal to 0.13). The following assumptions were made in order to calculate return on investment:
+
+* All loans are repaid in their regular monthly installment for the entire duration of the loan term.
+* Any loan that has not defaulted will be repaid in full.
+
+Given these assumptions, the total expected payment on any loan that is not in default is the product of the loan's monthly installment and its term in months. If the loan defaulted, the total expected payment is equal to the total payments to date. The return on investment is the difference of total expected payment and loan amount, divided by loan amount.
+  For the loans that fell into the low-risk category, the default rate improved from 12.4% to 8.4%. The return on investment for these loans is 16.4%. Loans that were categorized as high-risk had a default rate of 15.1%, while the return on investment was 22%. Of course, the high risk loans have a higher proportion of 60-month loans, which tend to have higher returns simply because they are longer. In order to account for this, each category was broken into sub-categories for 36- and 60-month loans.
+  
+```{r, echo = FALSE}
+loansTest$term_num <- ifelse(loansTest$term == " 36 months", 36, 60)
+loansTest$payout <- ifelse(loansTest$defaulted, loansTest$total_pymnt, loansTest$installment * loansTest$term_num)
+loans.highrisk <- loansTest[predictTest > threshold,]
+loans.lowrisk <- loansTest[predictTest <= threshold,]
+highrisk36 <- loans.highrisk[loans.highrisk$term_num == 36,]
+h36 <- (sum(highrisk36$payout, na.rm = TRUE) / sum(as.numeric(highrisk36$loan_amnt), na.rm = TRUE)) - 1
+lowrisk36 <- loans.lowrisk[loans.lowrisk$term_num == 36,]
+l36 <- (sum(lowrisk36$payout, na.rm = TRUE) / sum(as.numeric(lowrisk36$loan_amnt), na.rm = TRUE)) - 1
+highrisk60 <- loans.highrisk[loans.highrisk$term_num == 60,]
+h60 <- (sum(highrisk60$payout, na.rm = TRUE) / sum(as.numeric(highrisk60$loan_amnt), na.rm = TRUE)) - 1
+lowrisk60 <- loans.lowrisk[loans.lowrisk$term_num == 60,]
+l60 <- (sum(lowrisk60$payout, na.rm = TRUE) / sum(as.numeric(lowrisk60$loan_amnt), na.rm = TRUE)) - 1
+t60 <- c(l60, h60)
+t36 <- c(l36, h36)
+returns <- cbind(t36, t60)
+colnames(returns) <- c("36 Months", "60 Months")
+rownames(returns) <- c("Low-risk", "High-risk")
+returns
+```
+
+  Although high-risk loans initially appeared to deliver better returns, accounting for loan terms gives a clearer picture. Low risk loans have a higher average return on investment due to the higher probability of loans being successfully paid off. The below plot visualizes the potential returns for each loan grade:
+
+```{r, echo = FALSE}
+ggplot(loansTest, aes(x = grade, y = (payout - loan_amnt)/loan_amnt)) +
+  geom_boxplot() +
+  facet_grid(term ~ .) +
+  labs(x = "Grade", y = "Lifetime Return on Investment", title = "Total Returns by Loan Grade")
+```
+
+  As the loan's grade gets worse, both the maximum and median returns increase. The downside of these loans is the risk of incurring losses becomes considerably higher, so much so that the _average_ return for these loans actually becomes lower. The logistic regression model can be used in conjunction with loan grade to dive deeper and find the lowest risk loans in each grade and evaluate their average returns.
+  
+```{r, echo = FALSE}
+loans.lowrisk <- subset(loans.lowrisk, !is.na(grade))
+tbl_lowrisk <- loans.lowrisk %>% group_by(grade, term) %>% summarise(ROI = (sum(payout, na.rm = TRUE) - sum(loan_amnt, na.rm = TRUE)) / sum(loan_amnt, na.rm = TRUE)) %>% spread(term, ROI)
+kable(xtable(tbl_lowrisk), digits = 4, caption = "Lifetime Returns: Below Threshold", col.names = c("Grade", "36 Months", "60 Months"), row.names = FALSE)
+loans.highrisk <- subset(loans.highrisk, !is.na(grade))
+tbl_highrisk <- loans.highrisk %>% group_by(grade, term) %>% summarise(ROI = (sum(payout, na.rm = TRUE) - sum(loan_amnt, na.rm = TRUE)) / sum(loan_amnt, na.rm = TRUE)) %>% spread(term, ROI)
+kable(xtable(tbl_highrisk), digits = 4, caption = "Lifetime Returns: Above Threshold", col.names = c("Grade", "36 Months", "60 Months"), row.names = FALSE)
+```
+
+With the help of the logistic regression model, we were able to find loans that were rated poorly but still fell below the threshold probability of default. On average, these loans offer the highest lifetime return on investment as seen in the table above.
+
+###Conclusion
+
+  When evaluating investment opportunities, the basic factors to be taken into consideration are the the investment's risk and rewards. Lending Club's investment platform provides this information and gives the investor the power to build a portfolio based on their preferences. A highly risk-averse investor can choose to invest in loans with a grade of A while an investor seeking high returns and willing to accept the risk may choose loans with lower grades and higher interest rates. During statistical analysis, the factors contributing to a loan's successful repayment or default were identified: loan terms, total debt as a percentage of income (before and after the loan was approved), employment and history of delinquencies were the most significant.
+  Using predictive modeling, an investor can find loans that may be "underrated" -- in other words, poorly rated due to a bad credit rating, etc. but still considered low-risk by the logistic regression model. These loans offer the highest returns on average, meaning that a well-diversified portfolio of low-grade loans with a relatively low probability of defaulting will eventually result in the most profit.

@@ -24,8 +24,7 @@ loans$default_int <- as.integer(loans$defaulted)
 def_prop <- mean(loans$default_int)
 ## The population proportion for defaults is 12.4%.
 
-summary(loans[loans$defaulted == TRUE, "annual_inc"])
-summary(loans[loans$defaulted == FALSE, "annual_inc"])
+table(summary(loans[loans$defaulted == TRUE, "annual_inc"]),summary(loans[loans$defaulted == FALSE, "annual_inc"]))
 ## Loans that went into default had a lower annual income than those that did not.
 
 ## Loan terms and default rate
@@ -76,6 +75,19 @@ summary(loans$purpose)
 ## We won't have enough data on loans for education or weddings, so throwing those out.
 loans <- subset(loans, purpose != "educational")
 loans <- subset(loans, purpose != "wedding")
+loans$purpose <- factor(loans$purpose, levels = c("car", "credit_card",
+                                                  "debt_consolidation", "home_improvement",
+                                                  "house", "major_purchase",
+                                                  "medical", "moving",
+                                                  "other", "renewable_energy",
+                                                  "small_business", "vacation"),
+                          labels = c("Car", "Credit Card",
+                                                  "Debt Consolidation",
+                                                  "Home Improvement", "House",
+                                                  "Major Purchase", "Medical",
+                                                  "Moving", "Other",
+                                                  "Renewable Energy", "Small Business",
+                                                  "Vacation"))
 ## A look at loan amounts described by loan purpose:
 boxplot(loan_amnt ~ purpose, loans)
 ## Small business loans tend to be the largest, followed by loans for credit
@@ -166,14 +178,14 @@ ROC
 ## Create confusion matrix using a threshold of 0.13
 confusion <- prop.table(table(loansTest$defaulted, predictTest > 0.13), 1)
 confusion
-(confusion[1,1] + confusion[2,2]) / 2
-## Our logistic regression model has an out-of-sample accuracy of 59.2%.
+confusionweighted <- prop.table(table(loansTest$defaulted, predictTest > 0.13))
+(confusionweighted[1,1] + confusionweighted[2,2])
+## Our logistic regression model has an out-of-sample accuracy of 62.9%.
+
 ## Replace loan amount and annual income with ratio of loan amount to annual
 ## income. 
 loansTrain$loan_income_ratio <- loansTrain$loan_amnt / loansTrain$annual_inc
 loansTest$loan_income_ratio <- loansTest$loan_amnt / loansTest$annual_inc
-## Change weighting in glm for defaults.
-weight <- ifelse(loansTrain$defaulted == TRUE, 2, 1)
 
 defaultmod2 <- glm(defaulted ~ loan_income_ratio + 
                      term +
@@ -182,7 +194,7 @@ defaultmod2 <- glm(defaulted ~ loan_income_ratio +
                      purpose +
                      dti +
                      bc_util +
-                     ever_delinq, data = loansTrain, weights = weight, family = "binomial")
+                     ever_delinq, data = loansTrain, family = "binomial")
 summary(defaultmod2)
 
 ## Predictions and ROC curve from second model
@@ -192,12 +204,12 @@ ROCRperf <- performance(ROCRpred, "tpr", "fpr")
 ROC2 <- plot(ROCRperf, colorize = TRUE)
 ROC2
 ## Confusion matrix for second model
-threshold <- 0.225
-confusion2 <- prop.table(table(loansTest$defaulted, predictTest > threshold), 1)
+threshold <- 0.13
+confusion2 <- prop.table(table(loansTest$defaulted, predictTest > threshold),1)
 confusion2
-(confusion2[1,1] + confusion2[2,2]) / 2
-## The out of sample accuracy on the updated model has improved to just under
-## 59.4%.
+confusionweighted <- prop.table(table(loansTest$defaulted, predictTest > threshold))
+(confusionweighted[1,1] + confusionweighted[2,2])
+## The out of sample accuracy on the updated model has improved to 63.9%.
 
 ## Calculate default rate and profit margin on test dataset after eliminating
 ## high risk loans
@@ -225,6 +237,26 @@ sum(loansTest$payout, na.rm = TRUE)
 sum(loansTest$payout, na.rm = TRUE) / sum(as.numeric(loansTest$loan_amnt), na.rm = TRUE)
 ## The expected profit margin on all loans in the test data is 18.6%.
 
+loans.highrisk <- loansTest[predictTest > threshold,]
+sum(as.numeric(loans.highrisk$defaulted), na.rm = TRUE) / nrow(loans.highrisk)
+loans.highrisk$term_num <- ifelse(loans.highrisk$term == " 36 months", 36, 60)
+loans.highrisk$payout <- ifelse(loans.highrisk$defaulted, loans.highrisk$total_pymnt, loans.highrisk$installment * loans.highrisk$term_num)
+sum(loans.highrisk$payout, na.rm = TRUE)
+(sum(loans.highrisk$payout, na.rm = TRUE) / sum(as.numeric(loans.highrisk$loan_amnt), na.rm = TRUE)) - 1
+highrisk36 <- loans.highrisk[loans.highrisk$term_num == 36,]
+h36 <- (sum(highrisk36$payout, na.rm = TRUE) / sum(as.numeric(highrisk36$loan_amnt), na.rm = TRUE)) - 1
+lowrisk36 <- loans.lowrisk[loans.lowrisk$term_num == 36,]
+l36 <- (sum(lowrisk36$payout, na.rm = TRUE) / sum(as.numeric(lowrisk36$loan_amnt), na.rm = TRUE)) - 1
+highrisk60 <- loans.highrisk[loans.highrisk$term_num == 60,]
+h60 <- (sum(highrisk60$payout, na.rm = TRUE) / sum(as.numeric(highrisk60$loan_amnt), na.rm = TRUE)) - 1
+lowrisk60 <- loans.lowrisk[loans.lowrisk$term_num == 60,]
+l60 <- (sum(lowrisk60$payout, na.rm = TRUE) / sum(as.numeric(lowrisk60$loan_amnt), na.rm = TRUE)) - 1
+t60 <- c(h60, l60)
+t36 <- c(h36, l36)
+returns <- cbind(t36, t60)
+colnames(returns) <- c("36-months", "60 months")
+rownames(returns) <- c("High Risk", "Low Risk")
+returns
 ##What we've uncovered is that we can use logistic regression to flag loans as
 ##high-risk, but avoiding these loans comes with a downside: the potential
 ##profit from high-risk loans is higher because of their interest rates.
@@ -233,7 +265,18 @@ sum(loansTest$payout, na.rm = TRUE) / sum(as.numeric(loansTest$loan_amnt), na.rm
 
 ## A look at payouts by loan grade
 ggplot(loansTest, aes(x = grade, y = payout/loan_amnt)) +
-  geom_boxplot()
+  geom_boxplot() +
+  facet_grid(term ~ .)
+
+loans.lowrisk %>% group_by(grade) %>% summarise(ROI = (sum(payout) - sum(loan_amnt)) / sum(loan_amnt))
+loans.highrisk %>% group_by(grade) %>% summarise(ROI = (sum(payout) - sum(loan_amnt)) / sum(loan_amnt))
+loans.lowrisk <- subset(loans.lowrisk, !is.na(grade))
+tbl_lowrisk <- loans.lowrisk %>% group_by(grade, term) %>% summarise(ROI = (sum(payout, na.rm = TRUE) - sum(loan_amnt, na.rm = TRUE)) / sum(loan_amnt, na.rm = TRUE)) %>% spread(term, ROI)
+tbl_lowrisk
+
+loans.highrisk <- subset(loans.highrisk, !is.na(grade))
+tbl_highrisk <- loans.highrisk %>% group_by(grade, term) %>% summarise(ROI = (sum(payout, na.rm = TRUE) - sum(loan_amnt, na.rm = TRUE)) / sum(loan_amnt, na.rm = TRUE)) %>% spread(term, ROI)
+tbl_highrisk
 ## We can see that as the loan's grade gets worse, the potential payout is
 ## higher but the risk involved is also higher, as is evidenced by the wider
 ## spread of the boxplots. The lower quartile of F and G loans actually falls
@@ -249,3 +292,4 @@ ggplot(loansTest, aes(x = grade, y = payout/loan_amnt)) +
 ## well-diversified portfolio of medium-high risk loans will typically have a
 ## higher ROI than a portfolio of low-risk loans, even after accounting for
 ## defaults.
+
